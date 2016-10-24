@@ -69,7 +69,8 @@ class SFUser(CommonInfo):
         'self',
         null=True,
         blank=True,
-        on_delete=models.SET_NULL)
+        on_delete=models.SET_NULL,
+        db_constraint=False)
 
     class Meta:
         """Django Meta options"""
@@ -86,7 +87,8 @@ class ServiceGroupMembers(CommonInfo):
         SFUser,
         null=True,
         blank=True,
-        on_delete=models.SET_NULL)
+        on_delete=models.SET_NULL,
+        db_constraint=False)
 
     class Meta:
         """Django Meta options"""

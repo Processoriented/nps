@@ -103,84 +103,27 @@ class DataMap(models.Model):
     def __str__(self):
         return self.name
 
+    def sf_recs(self, qs):
+        rtn = None
+        req = self.api_cred.get_data(qs)
+        if 'records' in req.keys():
+            rtn = req['records']
+            if not(req['done']):
+                nqs = req['nextRecordsUrl'][21:]
+                rtn.append(self.sf_recs(nqs))
+        return rtn
+
     def prime_obj(self):
         moqs = self.mapobject_set.all()
         prime = None
         for mob in moqs:
             if mob.is_master():
                 prime = mob
-        return prime
-
-    def apply_model(self, recs, mapobj):
-        nrecs = []
-        for rec in recs:
-            nrec = {}
-            for key in rec:
-                mqs = mapobj.mapfield_set.filter(
-                    sf_api_name=key)
-                mtch = None if mqs.count() == 0 else mqs[0].dj_attr
-                val = rec[key]
-                if mtch:
-                    nrec[mtch] = val
-            nrecs.append(nrec)
-        return nrecs
-
-    def needs_deps(self, recs, mapobj):
-        rtn = {}
-        rflds = {
-            x.dj_attr: x
-            for x in mapobj.mapfield_set.filter(
-                sf_relation__isnull=False)}
-        for rec in recs:
-            for key in rec:
-                if key in rflds.keys():
-                    dcn = rflds[key].sf_relation__dj_class
-                    dlocn = 'nps.models.nps.'
-                    dlocn = dlocn + dcn
-                    dklass = locate(dlocn)
-                    qst = dklass.objects.filter(sfid=rec[key])
-                    if qst.count() == 0:
-                        if rtn[dcn]:
-                            if not(rec[key] in rtn[dcn]):
-                                rtn[dcn]['ids'].append(rec[key])
-                        else:
-                            rtn[dcn] = {
-                                'mobj': rflds[key],
-                                'ids': [rec[key]]}
-        return rtn
-
-    def load_object(self, mapobj, rtfilt=None):
-        qs = mapobj.apiqs(rtfilt)
-        sfd = self.api_cred.get_data(qs)
-        inprog = True
-        while inprog:
-            recs = self.apply_model(sfd['records'], mapobj)
-            needed = self.needs_deps(recs, mapobj)
-            while needed:
-                for dep in needed:
-                    rtf = "Id+in+('" 
-                    rtf = rtf + "','".join(dep['ids'][:249])
-                    rtf = rtf + "')"
-                    self.load_object(dep['mobj'], rtf)
-                needed = self.needs_deps(recs, mapobj)
-            locn = 'nps.models.nps.' + mapobj.dj_class
-            klass = locate(locn)
-            for rec in recs:
-                ckc = klass.objects.filter(sfid=rec['sfid'])
-                if ckc.count() > 0:
-                    if ckc[0].systemmodstamp < rec['systemmodstamp']:
-                        ckc[0].update(**rec)
-                else:
-                    nr = klass.objects.create(**rec)
-                    nr.save()
-            if sfd['finished']:
-                inprog = False
-            else:
-                sfd = self.api_cred.get_data(sfd['next'])        
+        return prime   
 
     def load_sf_data(self):
         prime = self.prime_obj()
-        self.load_object(prime)
+        prime.load_obj()
 
 
 class MapObject(models.Model):
@@ -202,13 +145,100 @@ class MapObject(models.Model):
         null=True,
         blank=True)
 
-    def get_field_by_dj_attr(self, filtr):
-        qs = self.mapfield_set.filter(dj_attr=filtr)
+    def get_field(self, sf_api_name):
+        qs = self.mapfield_set.filter(sf_api_name=sf_api_name)
+        if qs.count() == 0:
+            return None
+        else:
+            return qs[0]
 
+    def get_mapped(self):
+        locn = 'nps.models.' + self.dj_class
+        return locate(locn)
 
-    def cr_trgt_inst(self, **kwargs):
-        for field in kwargs:
+    def get_one(self, sfid):
+        rtfilt = "Id='" + sfid + "'"
+        return self.get_sf_recs(rtfilt)
 
+    def get_sf_recs(self, rtfilt=None):
+        qs = self.apiqs(rtfilt)
+        resp = self.data_map.sf_recs(qs)
+        return resp
+
+    def apply_map(self, rec):
+        rtn = {}
+        for key in rec:
+            mf = self.get_field(key)
+            if mf:
+                rtn[mf.dj_attr] = rec[key]
+        return rtn
+
+    def fkfields(self):
+        """check if any child objects"""
+        rtn = {}
+        rqs = self.mapfield_set.filter(sf_relation__isnull=False)
+        for mf in rqs:
+            rtn[mf.dj_attr] = mf
+        return rtn
+
+    def check_deps(self, rec):
+        rtn = {'rec': {}, 'ndd': {}}
+        for key, val in rec.items():
+            fks = self.fkfields()
+            if key in fks.keys() and not(val is None):
+                relobj = fks[key].sf_relation.get_mapped()
+                luqs = relobj.objects.filter(sfid=val)
+                if luqs.count() == 0:
+                    rtn['ndd'][fks[key].sf_relation.dj_class] = val
+                else:
+                    rtn['rec'][key] = luqs[0]
+            else:
+                rtn['rec'][key] = val
+        return rtn
+
+    def is_newer(self, frec, rqs):
+        try:
+            nd = frec['systemmodstamp']
+            cqs = rqs.filter(systemmodstamp__lt=nd)
+            return cqs.count() > 0
+        except:
+            return False
+
+    def load_recs(self, recs, ct=0):
+        if ct > 900:
+            return
+        need_deps = {}
+        deferred = []
+        klass = self.get_mapped()
+        for rec in recs:
+            frec = self.apply_map(rec)
+            deps = self.check_deps(frec)
+            if deps['ndd']:
+                for key, val in deps['ndd'].items():
+                    if not(key in need_deps.keys()):
+                        need_deps[key] = []
+                    need_deps[key].append(val)
+                    deferred.append(rec)
+            elif 'sfid' in deps['rec'].keys():
+                rqs = klass.objects.filter(sfid=deps['rec']['sfid'])
+                if rqs.count() == 0:
+                    nr = klass.objects.create(**deps['rec'])
+                    nr.save()
+                elif self.is_newer(deps['rec'], rqs):
+                    rqs.update(**deps['rec'])
+        for key, val in need_deps.items():
+            ids = val[:249]
+            rtfilt = "Id+in+('" + "','".join(ids) + "')"
+            relqs = self.data_map.mapobject_set.filter(dj_class=key)
+            relmo = relqs[0]
+            drecs = relmo.get_sf_recs(rtfilt)
+            relmo.load_recs(drecs)
+        self.load_recs(deferred, ct+1)
+                
+
+    def load_obj(self):
+        recs = self.get_sf_recs()
+        self.load_recs(recs)
 
     def apiqsw(self, rtfilt=None):
         """Returns Where Clause of query"""
@@ -408,3 +438,7 @@ class CommonInfo(models.Model):
         """gets url for record in SF"""
         sflink = 'https://gehealthcare-svc.my.salesforce.com/'
         return sflink + self.sfid
+
+    def get_map(self):
+        mqs = MapObject.objects.filter(dj_class=self.__class__.__name__)
+        return None if mqs.count() == 0 else mqs[0]
