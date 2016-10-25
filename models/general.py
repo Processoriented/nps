@@ -189,7 +189,8 @@ class MapObject(models.Model):
                 relobj = fks[key].sf_relation.get_mapped()
                 luqs = relobj.objects.filter(sfid=val)
                 if luqs.count() == 0:
-                    rtn['ndd'][fks[key].sf_relation.dj_class] = val
+                    djc = fks[key].sf_relation.dj_class
+                    rtn['ndd'][djc] = val
                 else:
                     rtn['rec'][key] = luqs[0]
             else:
@@ -217,7 +218,8 @@ class MapObject(models.Model):
                 for key, val in deps['ndd'].items():
                     if not(key in need_deps.keys()):
                         need_deps[key] = []
-                    need_deps[key].append(val)
+                    if not(val in need_deps[key]):
+                        need_deps[key].append(val)
                     deferred.append(rec)
             elif 'sfid' in deps['rec'].keys():
                 rqs = klass.objects.filter(sfid=deps['rec']['sfid'])
