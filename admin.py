@@ -1,5 +1,7 @@
 """admin settings for nps app"""
+import datetime
 from django.contrib import admin
+from django.utils import timezone as dtz
 from .models import *
 
 
@@ -28,8 +30,29 @@ class MapObjectInline(admin.TabularInline):
     extra = 0
 
 
+class MapSchedInline(admin.TabularInline):
+    model = MapSched
+    extra = 0
+
+
+def refresh_map(modeladmin, request, queryset):
+    for obj in queryset:
+        obj.load_sf_data()
+refresh_map.short_description = 'Realtime Refresh from SalesForce'
+
+def refresh_map_bkgd(modeladmin, request, queryset):
+    for obj in queryset:
+        ts = obj.mapsched_set.create(
+            frequency=10,
+            freq_unit='DY')
+        ts.end = ts.start + datetime.timedelta(days=1)
+        ts.save()
+refresh_map_bkgd.short_description = 'Refresh from SalesForce'
+
 class DataMapAdmin(admin.ModelAdmin):
-    inlines = [MapObjectInline]
+    list_display = ('name', 'map_active', 'last_refresh')
+    inlines = [MapObjectInline, MapSchedInline]
+    actions = [refresh_map_bkgd, refresh_map]
 
 
 class MapFieldInline(admin.TabularInline):

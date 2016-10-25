@@ -1,9 +1,10 @@
 """Django models for the nps app"""
 import os
 import requests
+import datetime
 from pydoc import locate
 from django.db import models
-from django.utils import timezone
+from django.utils import timezone as dtz
 
 
 def proxies():
@@ -99,6 +100,10 @@ class DataMap(models.Model):
     api_cred = models.ForeignKey(
         ForceAPI,
         on_delete=models.CASCADE)
+    map_active = models.BooleanField(default=False)
+    last_refresh = models.DateTimeField(
+        null=True,
+        blank=True)
 
     def __str__(self):
         return self.name
@@ -124,6 +129,97 @@ class DataMap(models.Model):
     def load_sf_data(self):
         prime = self.prime_obj()
         prime.load_obj()
+        self.update_refresh()
+
+    def update_refresh(self):
+        now = dtz.now()
+        then = now + datetime.timedelta(days=-999)
+        nd = now + datetime.timedelta(days=-999)
+        moqs = self.mapobject_set.all()
+        for mo in moqs:
+            if mo.last_refresh:
+                if mo.last_refresh > nd:
+                    nd = mo.last_refresh
+        if nd > then:
+            self.last_refresh = nd
+            self.save()
+
+
+class MapSched(models.Model):
+    UNIT_OPTS = (
+        ('HR', 'Hours'),
+        ('DY', 'Days'),
+        ('WK', 'Week'),
+        ('MO', 'Month'),
+        ('YR', 'Year'),)
+    data_map = models.ForeignKey(
+        DataMap,
+        on_delete=models.CASCADE)
+    frequency = models.IntegerField()
+    freq_unit = models.CharField(
+        max_length=2,
+        choices=UNIT_OPTS)
+    start = models.DateTimeField(
+        default=dtz.now)
+    end = models.DateTimeField(
+        null=True,
+        blank=True)
+    next_itr = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False)
+
+    def incr_opt(self, idt):
+        if self.freq_unit == 'HR':
+            hrs = self.frequency
+            return idt + datetime.timedelta(hours=hrs)
+        elif self.freq_unit == 'DY':
+            daze = self.frequency
+            return idt + datetime.timedelta(days=daze)
+        elif self.freq_unit == 'WK':
+            wks = self.frequency
+            return idt + datetime.timedelta(days=wks)
+        elif self.freq_unit == 'MO':
+            premonth = idt.month
+            nxtyear = idt.year
+            nxtmonth = premonth + self.frequency
+            while nxtmonth > 12:
+                nxtyear = nxtyear + 1
+                nxtmonth = nxtmonth - 12
+            return idt.replace(year=nxtyear, month=nxtmonth)
+        elif self.freq_unit == 'YR':
+            yr = idt.year + self.frequency
+            return idt.replace(year=yr)
+
+    def is_due(self):
+        if not(self.end is None):
+            if self.end < dtz.now():
+                return False
+        if self.start > dtz.now():
+            return False
+        if not(self.data_map.map_active):
+            return False
+        if self.next_itr is None:
+            self.next_itr = self.start
+            self.save()
+        if self.start > self.next_itr:
+            self.next_itr = self.start
+            self.save()
+        lstDone = self.data_map.last_refresh
+        if lstDone is None:
+            return True
+        exptd = self.incr_opt(lstDone)
+        if exptd > self.next_itr:
+            exptd = self.next_itr
+        return exptd < dtz.now()
+
+    def increment_nxt(self):
+        if self.next_itr is None:
+            self.next_itr = self.start
+            self.save()
+        while self.next_itr < dtz.now():
+            self.next_itr = self.incr_opt(self.next_itr)
+            self.save()
 
 
 class MapObject(models.Model):
@@ -144,6 +240,13 @@ class MapObject(models.Model):
         max_length=64,
         null=True,
         blank=True)
+    last_refresh = models.DateTimeField(
+        null=True,
+        blank=True)
+    record_count = models.IntegerField(
+        null=True,
+        blank=True,
+        default=0)
 
     def get_field(self, sf_api_name):
         qs = self.mapfield_set.filter(sf_api_name=sf_api_name)
@@ -235,8 +338,29 @@ class MapObject(models.Model):
             relmo = relqs[0]
             drecs = relmo.get_sf_recs(rtfilt)
             relmo.load_recs(drecs)
-        self.load_recs(deferred, ct+1)
-                
+        if len(deferred) > 0:
+            self.load_recs(deferred, ct+1)
+        self.set_stats()
+
+    def set_stats(self):
+        self.set_refreshed()
+        self.set_rec_ct()
+
+    def set_rec_ct(self):
+        mo = self.get_mapped()
+        ct = mo.objects.all().count()
+        cur = self.record_count or 0
+        if cur < ct:
+            self.record_count = ct
+            self.save()
+
+    def set_refreshed(self):
+        now = dtz.now()
+        then = now + datetime.timedelta(days=-1)
+        cur = self.last_refresh or then
+        if cur < now:
+            self.last_refresh = now
+            self.save()
 
     def load_obj(self):
         recs = self.get_sf_recs()
@@ -274,32 +398,6 @@ class MapObject(models.Model):
         """check if has a parent object"""
         rqs = MapField.objects.filter(sf_relation__pk=self.pk)
         return rqs.count() == 0
-
-    def has_rels(self):
-        """check if any child objects"""
-        rqs = self.mapfield_set.filter(sf_relation__isnull=False)
-        return rqs.count() > 0
-
-    def apirqs(self):
-        """get related field api queries"""
-        rfqs = self.mapfield_set.filter(sf_relation__isnull=False)
-        cowc = self.apiqsw()
-        odefs = []
-        for relf in rfqs:
-            relo = relf.sf_relation
-            sqlist = [
-                'Id', 'in', '(SELECT',
-                relf.sf_api_name, 'FROM',
-                self.sf_api_name]
-            if cowc:
-                sqlist.append('WHERE')
-                sqlist.append(cowc)
-            sqtxt = "+".join(sqlist) + ')'
-            odef = {
-                'mapobj': relo,
-                'relqs': relo.apiqs(sqtxt)}
-            odefs.append(odef)
-        return odefs
 
     def __str__(self):
         return self.dj_class
@@ -380,8 +478,8 @@ class MapFilter(models.Model):
             pk=self.pk).count() == 1)
         rtn = None
         if valid:
-            curdt = timezone.now()
-            tmd = timezone.timedelta(days=self.logic_param)
+            curdt = dtz.now()
+            tmd = datetime.timedelta(days=self.logic_param)
             fdt = curdt + tmd
             sdt = fdt.isoformat().split('+')[0][0:-3] + 'Z'
             rtn = self.map_field.sf_api_name
@@ -428,7 +526,11 @@ class CommonInfo(models.Model):
         null=True,
         blank=True)
     systemmodstamp = models.DateTimeField(
-        default=timezone.now)
+        default=dtz.now)
+    map_object = models.ForeignKey(
+        MapObject,
+        null=True,
+        on_delete=models.SET_NULL)
 
     class Meta:
         abstract = True
@@ -440,7 +542,3 @@ class CommonInfo(models.Model):
         """gets url for record in SF"""
         sflink = 'https://gehealthcare-svc.my.salesforce.com/'
         return sflink + self.sfid
-
-    def get_map(self):
-        mqs = MapObject.objects.filter(dj_class=self.__class__.__name__)
-        return None if mqs.count() == 0 else mqs[0]
