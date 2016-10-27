@@ -108,6 +108,18 @@ class DataMap(models.Model):
     def __str__(self):
         return self.name
 
+    def nxt_refresh(self):
+        rtn = None
+        for sched in self.mapsched_set.all():
+            ed = sched.next_itr if sched.end is None else sched.end
+            if not(sched.next_itr > ed):
+                snxt = sched.next_itr
+                if rtn is None:
+                    rtn = snxt
+                else:
+                    rtn = rtn if snxt < rtn else snxt
+        return rtn
+
     def sf_recs(self, qs):
         rtn = None
         req = self.api_cred.get_data(qs)
@@ -149,9 +161,9 @@ class MapSched(models.Model):
     UNIT_OPTS = (
         ('HR', 'Hours'),
         ('DY', 'Days'),
-        ('WK', 'Week'),
-        ('MO', 'Month'),
-        ('YR', 'Year'),)
+        ('WK', 'Weeks'),
+        ('MO', 'Months'),
+        ('YR', 'Years'),)
     data_map = models.ForeignKey(
         DataMap,
         on_delete=models.CASCADE)
@@ -167,7 +179,18 @@ class MapSched(models.Model):
     next_itr = models.DateTimeField(
         null=True,
         blank=True,
-        editable=False)
+        editable=False,
+        default=dtz.now)
+
+    def __str__(self):
+        unt = [d for d in self.UNIT_OPTS if d[0] == self.freq_unit]
+        unt = unt[0][1]
+        unt = unt[:-1] if self.frequency == 1 else unt
+        return '%s: every %s %s starting %s' % (
+            self.data_map.name,
+            str(self.frequency),
+            unt,
+            self.next_itr.isoformat())
 
     def incr_opt(self, idt):
         if self.freq_unit == 'HR':

@@ -50,7 +50,7 @@ def refresh_map_bkgd(modeladmin, request, queryset):
 refresh_map_bkgd.short_description = 'Refresh from SalesForce'
 
 class DataMapAdmin(admin.ModelAdmin):
-    list_display = ('name', 'map_active', 'last_refresh')
+    list_display = ('name', 'map_active', 'last_refresh', 'nxt_refresh')
     inlines = [MapObjectInline, MapSchedInline]
     actions = [refresh_map_bkgd, refresh_map]
 
