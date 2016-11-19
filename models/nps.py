@@ -1,7 +1,5 @@
 from django.db import models
-from django.utils import timezone
 from .general import CommonInfo
-
 
 
 class Case(CommonInfo):
@@ -39,6 +37,10 @@ class Contact(CommonInfo):
         blank=True)
     email = models.EmailField(
         max_length=80,
+        null=True,
+        blank=True)
+    lang = models.CharField(
+        max_length=40,
         null=True,
         blank=True)
 

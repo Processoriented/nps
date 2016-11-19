@@ -1,7 +1,6 @@
 from django.utils import timezone as dtz
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 from nps.models import MapSched
-
 
 
 class Command(BaseCommand):

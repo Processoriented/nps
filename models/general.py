@@ -136,7 +136,7 @@ class DataMap(models.Model):
         for mob in moqs:
             if mob.is_master():
                 prime = mob
-        return prime   
+        return prime
 
     def load_sf_data(self):
         prime = self.prime_obj()
