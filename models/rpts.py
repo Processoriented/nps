@@ -50,6 +50,7 @@ class Report_Source(models.Model):
         blank=True)
 
     def __str__(self):
-        return "%s Source %s (%s)" %
+        return "%s Source %s (%s)" % (
             self.report.name,
-            
+            self.rest_source.name,
+            self.id)
