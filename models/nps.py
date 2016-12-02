@@ -37,6 +37,10 @@ class Contact(CommonInfo):
         max_length=40,
         null=True,
         blank=True)
+    language_c = models.CharField(
+        max_length=80,
+        null=True,
+        blank=True)
     email = models.EmailField(
         max_length=80,
         null=True,
